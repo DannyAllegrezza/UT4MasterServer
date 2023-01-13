@@ -2,36 +2,43 @@
 
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.Extensions.Options;
 using Newtonsoft.Json.Linq;
 using System.Text.Json;
 using UT4MasterServer.Authentication;
 using UT4MasterServer.Models;
+using UT4MasterServer.Other;
 using UT4MasterServer.Services;
 using JsonSerializer = System.Text.Json.JsonSerializer;
 
 namespace UT4MasterServer.Controllers;
 
+/// <summary>
+/// ut-public-service-prod10.ol.epicgames.com
+/// </summary>
 [ApiController]
 [Route("ut/api/matchmaking")]
 [AuthorizeBearer]
 [Produces("application/json")]
 public class UnrealTournamentMatchmakingController : JsonAPIController
 {
-	private readonly ILogger<SessionController> logger;
 	private readonly MatchmakingService matchmakingService;
+	private readonly IOptions<ApplicationSettings> configuration;
 	private const int MAX_READ_SIZE = 1024 * 4;
 
-	public UnrealTournamentMatchmakingController(ILogger<SessionController> logger, MatchmakingService matchmakingService)
+	public UnrealTournamentMatchmakingController(
+		ILogger<UnrealTournamentMatchmakingController> logger,
+		IOptions<ApplicationSettings> configuration,
+		MatchmakingService matchmakingService) : base(logger)
 	{
-		this.logger = logger;
+		this.configuration = configuration;
 		this.matchmakingService = matchmakingService;
-
 	}
 
 	#region Endpoints for Game Servers
 
 	[HttpPost("session")]
-	public async Task<IActionResult> StartGameServer()
+	public async Task<IActionResult> CreateGameServer()
 	{
 		if (User.Identity is not EpicUserIdentity user)
 			return Unauthorized();
@@ -43,29 +50,30 @@ public class UnrealTournamentMatchmakingController : JsonAPIController
 			return BadRequest();
 
 		server.SessionID = user.Session.ID;
+#if DEBUG
+		server.SessionAccessToken = user.AccessToken;
+#endif
 		server.ID = EpicID.GenerateNew();
 		server.LastUpdated = DateTime.UtcNow;
 
-		var ipAddress = HttpContext.Connection.RemoteIpAddress;
-		if (ipAddress == null)
+		var ipClient = GetClientIP(configuration);
+		if (ipClient == null)
 		{
-			// TODO: wtf!? why can this be null???
-			logger.LogCritical($"Could not determine ip address of remote GameServer, this issue needs to be resolved!");
+			logger.LogError("Could not determine IP Address of remote machine.");
 			return StatusCode(StatusCodes.Status500InternalServerError);
 		}
-		if (ipAddress.AddressFamily == System.Net.Sockets.AddressFamily.InterNetworkV6)
+		if (ipClient.AddressFamily == System.Net.Sockets.AddressFamily.InterNetworkV6)
 		{
-			// ipv6 does not seem to work
-			logger.LogWarning($"GameServer is connecting from ipv6 address ({ipAddress})! mapping to ipv4...");
-			ipAddress = ipAddress.MapToIPv4();
+			logger.LogWarning("Client is using IPv6. GameServer might not be accessible by others.");
 		}
-		server.ServerAddress = ipAddress.ToString();
+
+		server.ServerAddress = ipClient.ToString();
 		server.Started = false;
 
 		// TODO: figure out trusted keys & determine trust level
 		server.Attributes.Set("UT_SERVERTRUSTLEVEL_i", (int)GameServerTrust.Untrusted);
 
-		await matchmakingService.Add(server);
+		await matchmakingService.AddAsync(server);
 
 		return Json(server.ToJson(false));
 	}
@@ -82,34 +90,61 @@ public class UnrealTournamentMatchmakingController : JsonAPIController
 		if (update == null)
 			return BadRequest();
 
-		var old = await matchmakingService.Get(user.Session.ID, update.ID);
+		if (update.ID != EpicID.FromString(id))
+			return UnknownSessionId(id);
+
+		var old = await matchmakingService.GetAsync(user.Session.ID, update.ID);
 		if (old == null)
-			return BadRequest();
+			return UnknownSessionId(id);
 
 		old.Update(update);
 
-		await matchmakingService.Update(old);
+		await matchmakingService.UpdateAsync(old);
 
 		return Json(old.ToJson(false));
+	}
+
+	[HttpGet("session/{id}")]
+	public async Task<IActionResult> GetGameServer(string id)
+	{
+		if (User.Identity is not EpicUserIdentity user)
+			return Unauthorized();
+
+		// TODO: allow anyone to do this request
+
+		var server = await matchmakingService.GetAsync(user.Session.ID, EpicID.FromString(id));
+		if (server == null)
+			return UnknownSessionId(id);
+
+		return Json(server.ToJson(false));
+	}
+
+	[HttpDelete("session/{id}")]
+	public async Task<IActionResult> DeleteGameServer(string id)
+	{
+		if (User.Identity is not EpicUserIdentity user)
+			return Unauthorized();
+
+		bool wasDeleted = await matchmakingService.RemoveAsync(user.Session.ID, EpicID.FromString(id));
+
+		// TODO: unknown actual responses but these seem to work
+
+		if (!wasDeleted)
+			return UnknownSessionId(id);
+
+		return Ok();
 	}
 
 	[HttpPost("session/{id}/start")]
 	public async Task<IActionResult> NotifyGameServerIsReady(string id)
 	{
-		if (User.Identity is not EpicUserIdentity user)
-			return Unauthorized();
+		return await ChangeGameServerStarted(id, true);
+	}
 
-		var serverID = EpicID.FromString(id);
-
-		var server = await matchmakingService.Get(user.Session.ID, serverID);
-		if (server == null)
-			return BadRequest();
-
-		server.Started = true;
-
-		await matchmakingService.Update(server);
-
-		return NoContent();
+	[HttpPost("session/{id}/stop")]
+	public async Task<IActionResult> NotifyGameServerHasStopped(string id)
+	{
+		return await ChangeGameServerStarted(id, false);
 	}
 
 	[HttpPost("session/{id}/heartbeat")]
@@ -118,12 +153,37 @@ public class UnrealTournamentMatchmakingController : JsonAPIController
 		if (User.Identity is not EpicUserIdentity user)
 			return Unauthorized();
 
-		var server = await matchmakingService.Get(user.Session.ID, EpicID.FromString(id));
+		var server = await matchmakingService.GetAsync(user.Session.ID, EpicID.FromString(id));
 		if (server == null)
-			return BadRequest();
+			return UnknownSessionId(id);
+
+		// HACK: server will create new session 2h before current one expires.
+		//       to guarantee us a way to track a single server between sessions
+		//       we start sending failed heartbeat before server would
+		//       have created it. by doing so we force the server to:
+		//         - create new session token
+		//         - use new session token to stop old server
+		//         - use new session token to start new server
+
+		if (user.Session.CreationMethod == SessionCreationMethod.ClientCredentials &&
+			user.Session.AccessToken.ExpirationDuration < TimeSpan.FromHours(2) + TimeSpan.FromSeconds(25))
+		{
+			return NotFound(new ErrorResponse
+			{
+				ErrorCode = "errors.com.epicgames.common.oauth.unauthorized_client",
+				ErrorMessage = $"Sorry your client is not allowed to use the grant type client_credentials. Please download and use UT4UU",
+				NumericErrorCode = 1015,
+				OriginatingService = "com.epicgames.account.public",
+				Intent = "prod",
+				ErrorDescription = $"Sorry your client is not allowed to use the grant type client_credentials. Please download and use UT4UU",
+				Error = "unauthorized_client",
+			});
+
+			//return UnknownSessionId(id); // trigger server recreation
+		}
 
 		server.LastUpdated = DateTime.UtcNow;
-		await matchmakingService.Update(server);
+		await matchmakingService.UpdateAsync(server);
 
 		return NoContent();
 	}
@@ -142,14 +202,14 @@ public class UnrealTournamentMatchmakingController : JsonAPIController
 
 		var serverID = EpicID.FromString(id);
 
-		var old = await matchmakingService.Get(user.Session.ID, serverID);
+		var old = await matchmakingService.GetAsync(user.Session.ID, serverID);
 		if (old == null)
 			return NoContent();
 
 		old.PublicPlayers = serverOnlyWithPlayers.PublicPlayers;
 		old.PrivatePlayers = serverOnlyWithPlayers.PrivatePlayers;
 
-		await matchmakingService.Update(old);
+		await matchmakingService.UpdateAsync(old);
 
 		return Json(old.ToJson(false));
 	}
@@ -165,15 +225,17 @@ public class UnrealTournamentMatchmakingController : JsonAPIController
 		if (players == null)
 			return BadRequest();
 
-		var server = await matchmakingService.Get(user.Session.ID, EpicID.FromString(id));
+		var server = await matchmakingService.GetAsync(user.Session.ID, EpicID.FromString(id));
 		if (server == null)
-			return BadRequest();
+			return UnknownSessionId(id);
 
 		foreach (var player in players)
 		{
 			server.PublicPlayers.Remove(player);
 			server.PrivatePlayers.Remove(player);
 		}
+
+		await matchmakingService.UpdateAsync(server);
 
 		return Json(server.ToJson(false));
 	}
@@ -186,12 +248,12 @@ public class UnrealTournamentMatchmakingController : JsonAPIController
 	[HttpPost("session/matchMakingRequest")]
 	public async Task<IActionResult> ListGameServers([FromBody] GameServerFilter filter)
 	{
-		if (User.Identity is not EpicUserIdentity user)
+		if (User.Identity is not EpicUserIdentity)
 		{
-			// allow any third-party project to easily access hub list without any authentication
+			logger.LogInformation($"'{Request.HttpContext.Connection.RemoteIpAddress}' accessed GameServer list without authentication");
 		}
 
-		var servers = await matchmakingService.List(filter);
+		var servers = await matchmakingService.ListAsync(filter);
 
 		//var list = new GameServer[]
 		//{
@@ -218,6 +280,25 @@ public class UnrealTournamentMatchmakingController : JsonAPIController
 		return Json(arr);
 	}
 
+	/// <summary>
+	/// This action is for convenience of users to be able to easily retrieve a list of hubs and/or servers.
+	/// </summary>
+	/// <param name="showHubs">whether to return hubs</param>
+	/// <param name="showServers">whether to return servers</param>
+	/// <returns></returns>
+	[AllowAnonymous]
+	[HttpGet("session/matchMakingRequest")]
+	public async Task<IActionResult> ListGameServers([FromQuery] bool? showHubs, [FromQuery] bool? showServers)
+	{
+		if (User.Identity is not EpicUserIdentity)
+		{
+			logger.LogInformation($"'{Request.HttpContext.Connection.RemoteIpAddress}' accessed GameServer list without authentication");
+		}
+
+		// TODO: implement query filters
+		return await ListGameServers(new GameServerFilter());
+	}
+
 	[HttpPost("session/{id}/join")]
 	public IActionResult PlayerJoinGameServer(string id, [FromQuery(Name = "accountId")] string accountID)
 	{
@@ -225,6 +306,8 @@ public class UnrealTournamentMatchmakingController : JsonAPIController
 			return Unauthorized();
 
 		EpicID eid = EpicID.FromString(id);
+
+		// TODO: Return UnknownSessionId(id);
 
 		// TODO: we should verify that specific user has joined specific GameServer
 		//       instead of just relying on GameServer blindly believing that user
@@ -236,4 +319,38 @@ public class UnrealTournamentMatchmakingController : JsonAPIController
 	}
 
 	#endregion
+
+	[NonAction]
+	private NotFoundObjectResult UnknownSessionId(string id)
+	{
+		return NotFound(new ErrorResponse
+		{
+			ErrorCode = "errors.com.epicgames.modules.matchmaking.unknown_session",
+			ErrorMessage = $"unknown session id {id}",
+			MessageVars = new[] { id },
+			NumericErrorCode = 12101,
+			OriginatingService = "utservice",
+			Intent = "prod10",
+		});
+	}
+
+	[NonAction]
+	private async Task<IActionResult> ChangeGameServerStarted(string id, bool started)
+	{
+		if (User.Identity is not EpicUserIdentity user)
+			return Unauthorized();
+
+		var serverID = EpicID.FromString(id);
+
+		var server = await matchmakingService.GetAsync(user.Session.ID, serverID);
+		if (server == null)
+			return UnknownSessionId(id);
+
+		server.Started = started;
+
+		// Don't immediately remove it, let it become stale.
+		await matchmakingService.UpdateAsync(server);
+
+		return NoContent();
+	}
 }

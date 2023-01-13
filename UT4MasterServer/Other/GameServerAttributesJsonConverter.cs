@@ -1,7 +1,8 @@
 ﻿using System.Text.Json;
 using System.Text.Json.Serialization;
+using UT4MasterServer.Models;
 
-namespace UT4MasterServer;
+namespace UT4MasterServer.Other;
 
 public class GameServerAttributesJsonConverter : JsonConverter<GameServerAttributes>
 {
@@ -55,15 +56,17 @@ public class GameServerAttributesJsonConverter : JsonConverter<GameServerAttribu
 	public override void Write(Utf8JsonWriter writer, GameServerAttributes value, JsonSerializerOptions options)
 	{
 		writer.WriteStartObject();
-		foreach (var attrib in value.GetUnderlyingDict())
+		foreach (var key in value.GetKeys())
 		{
-			writer.WritePropertyName(attrib.Key);
-			if (attrib.Value is string)
-				writer.WriteStringValue(attrib.Value as string);
-			else if (attrib.Value is int)
-				writer.WriteNumberValue((int)attrib.Value);
-			else if (attrib.Value is bool)
-				writer.WriteBooleanValue((bool)attrib.Value);
+			var val = value.Get(key);
+
+			writer.WritePropertyName(key);
+			if (val is string valString)
+				writer.WriteStringValue(valString);
+			else if (val is int valInt)
+				writer.WriteNumberValue(valInt);
+			else if (val is bool valBool)
+				writer.WriteBooleanValue(valBool);
 		}
 		writer.WriteEndObject();
 	}

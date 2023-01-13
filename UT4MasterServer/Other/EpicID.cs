@@ -2,7 +2,7 @@
 using MongoDB.Bson.Serialization.Attributes;
 using UT4MasterServer.Helpers;
 
-namespace UT4MasterServer;
+namespace UT4MasterServer.Other;
 
 [Serializable]
 public struct EpicID : IComparable<EpicID>, IEquatable<EpicID>, IConvertible, IBsonClassMapAttribute
@@ -17,7 +17,7 @@ public struct EpicID : IComparable<EpicID>, IEquatable<EpicID>, IConvertible, IB
 	{
 		get
 		{
-			return ID == Empty.ID;
+			return string.IsNullOrWhiteSpace(ID) || ID == Empty.ID;
 		}
 	}
 

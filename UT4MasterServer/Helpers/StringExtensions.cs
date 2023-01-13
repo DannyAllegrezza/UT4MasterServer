@@ -19,4 +19,29 @@ public static class StringExtensions
 
 		return true;
 	}
+
+	/// <summary>
+	/// Tries to decode Base64 string into bytes.
+	/// </summary>
+	/// <param name="input">Base64 string</param>
+	/// <param name="parsedBytes">Decoded bytes (is null when method returns false)</param>
+	/// <returns>Whether method managed to decode base64 string</returns>
+	public static bool TryDecodeBase64(this string input, out byte[] parsedBytes)
+	{
+		parsedBytes = null!;
+		if (string.IsNullOrWhiteSpace(input))
+		{
+			return false;
+		}
+
+		var buffer = new Span<byte>(new byte[input.Length]);
+		var isBase64 = Convert.TryFromBase64String(input, buffer, out var bytesParsed);
+
+		if (isBase64)
+		{
+			parsedBytes = buffer[..bytesParsed].ToArray();
+		}
+
+		return isBase64;
+	}
 }

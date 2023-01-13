@@ -1,8 +1,10 @@
-﻿using Microsoft.AspNetCore.Mvc;
+using Microsoft.AspNetCore.Mvc;
 using Microsoft.Extensions.Options;
 using Newtonsoft.Json.Linq;
 using UT4MasterServer.Authentication;
 using UT4MasterServer.Models;
+using UT4MasterServer.Models.Requests;
+using UT4MasterServer.Other;
 using UT4MasterServer.Services;
 
 namespace UT4MasterServer.Controllers;
@@ -16,7 +18,6 @@ namespace UT4MasterServer.Controllers;
 [Produces("application/json")]
 public class SessionController : JsonAPIController
 {
-	private readonly ILogger<SessionController> logger;
 	private readonly AccountService accountService;
 	private readonly SessionService sessionService;
 	private readonly CodeService codeService;
@@ -24,25 +25,17 @@ public class SessionController : JsonAPIController
 
 	public SessionController(
 		SessionService sessionService, CodeService codeService, AccountService accountService,
-		IOptions<DatabaseSettings> settings, ILogger<SessionController> logger)
+		IOptions<ApplicationSettings> settings, ILogger<SessionController> logger) : base(logger)
 	{
 		this.codeService = codeService;
 		this.sessionService = sessionService;
 		this.accountService = accountService;
-		this.logger = logger;
 		allowPasswordGrant = settings.Value.AllowPasswordGrantType;
 	}
 
 	[AuthorizeBasic]
 	[HttpPost("token")]
-	public async Task<IActionResult> Authenticate(
-		[FromForm(Name = "grant_type")] string grantType,
-		[FromForm(Name = "includePerms")] bool? includePerms,
-		[FromForm(Name = "code")] string? code,
-		[FromForm(Name = "exchange_code")] string? exchangeCode,
-		[FromForm(Name = "refresh_token")] string? refreshToken,
-		[FromForm(Name = "username")] string? username,
-		[FromForm(Name = "password")] string? password)
+	public async Task<IActionResult> Authenticate([FromForm] AuthenticateRequest request)
 	{
 		if (User.Identity is not EpicClientIdentity user)
 			return Unauthorized();
@@ -50,13 +43,13 @@ public class SessionController : JsonAPIController
 		EpicID clientID = user.Client.ID;
 		Session? session = null;
 		Account? account = null;
-		switch (grantType)
+		switch (request.GrantType)
 		{
 			case "authorization_code":
 			{
-				if (code != null)
+				if (request.Code != null)
 				{
-					var codeAuth = await codeService.TakeCodeAsync(CodeKind.Authorization, code);
+					var codeAuth = await codeService.TakeCodeAsync(CodeKind.Authorization, request.Code);
 					if (codeAuth != null)
 						session = await sessionService.CreateSessionAsync(codeAuth.AccountID, clientID, SessionCreationMethod.AuthorizationCode);
 				}
@@ -68,10 +61,10 @@ public class SessionController : JsonAPIController
 			}
 			case "exchange_code":
 			{
-				if (exchangeCode != null)
+				if (request.ExchangeCode != null)
 				{
 					// TODO: Check if user has permission and return "Sorry your login does not posses the permissions 'account:oauth:exchangeTokenCode CREATE' needed to perform the requested operation"
-					var codeExchange = await codeService.TakeCodeAsync(CodeKind.Exchange, exchangeCode);
+					var codeExchange = await codeService.TakeCodeAsync(CodeKind.Exchange, request.ExchangeCode);
 					if (codeExchange != null)
 						session = await sessionService.CreateSessionAsync(codeExchange.AccountID, clientID, SessionCreationMethod.ExchangeCode);
 				}
@@ -83,9 +76,9 @@ public class SessionController : JsonAPIController
 			}
 			case "refresh_token":
 			{
-				if (refreshToken != null)
+				if (request.RefreshToken != null)
 				{
-					session = await sessionService.RefreshSessionAsync(refreshToken);
+					session = await sessionService.RefreshSessionAsync(request.RefreshToken);
 				}
 				else
 				{
@@ -101,9 +94,6 @@ public class SessionController : JsonAPIController
 			}
 			case "password":
 			{
-				if (!allowPasswordGrant)
-					break;
-
 				// NOTE: this grant_type is not recommended anymore: https://oauth.net/2/grant-types/password/
 				//       also this: https://stackoverflow.com/questions/62395052/oauth-password-grant-replacement
 				//
@@ -111,20 +101,35 @@ public class SessionController : JsonAPIController
 				//       really need multi-factor auth. it is after all the way that ut's login screen
 				//       works when you start the game without launcher (and without UT4UU).
 
-				if (username == null)
+				// EPIC is returning this ErrorResponse after checking username and password... This is better place IMO
+				if (!allowPasswordGrant)
+				{
+					return Unauthorized(new ErrorResponse
+					{
+						ErrorCode = "errors.com.epicgames.common.oauth.unauthorized_client",
+						ErrorMessage = $"Sorry your client is not allowed to use the grant type {request.GrantType}. Please download and use UT4UU",
+						NumericErrorCode = 1015,
+						OriginatingService = "com.epicgames.account.public",
+						Intent = "prod",
+						ErrorDescription = $"Sorry your client is not allowed to use the grant type {request.GrantType}. Please download and use UT4UU",
+						Error = "unauthorized_client",
+					});
+				}
+
+				if (request.Username == null)
 				{
 					return ErrorInvalidRequest("username");
 				}
 
-				if (password == null)
+				if (request.Password == null)
 				{
 					return ErrorInvalidRequest("password");
 				}
 
-				// TODO: Check permission and return Error: Sorry your client is not allowed to use the grant type password. errorCode: errors.com.epicgames.common.oauth.unauthorized_client
-				account = await accountService.GetAccountAsync(username, password);
+				account = await accountService.GetAccountAsync(request.Username, request.Password);
 				if (account != null)
 					session = await sessionService.CreateSessionAsync(account.ID, clientID, SessionCreationMethod.Password);
+
 				break;
 			}
 			default:
@@ -132,22 +137,37 @@ public class SessionController : JsonAPIController
 				return BadRequest(new ErrorResponse
 				{
 					ErrorCode = "errors.com.epicgames.common.oauth.unsupported_grant_type",
-					ErrorMessage = $"Unsupported grant type: {grantType}",
+					ErrorMessage = $"Unsupported grant type: {request.GrantType}",
 					NumericErrorCode = 1016,
 					OriginatingService = "com.epicgames.account.public",
 					Intent = "prod",
-					ErrorDescription = $"Unsupported grant type: {grantType}",
+					ErrorDescription = $"Unsupported grant type: {request.GrantType}",
 					Error = "unsupported_grant_type",
 				});
 			}
 		}
 
-		if (session == null) // only here to prevent null warnings, should never happen
-			return BadRequest();
+		if (session == null)
+		{
+			var message = $"Invalid credentials";
+			logger.LogError(message);
+
+			// TODO: Find proper response
+			return Unauthorized(new ErrorResponse
+			{
+				ErrorCode = "errors.com.epicgames.common.oauth.invalid_credentials",
+				ErrorMessage = message,
+				NumericErrorCode = 0,
+				OriginatingService = "com.epicgames.account.public",
+				Intent = "prod",
+				ErrorDescription = message,
+				Error = "invalid_credentials",
+			});
+		}
 
 		if (account == null)
 			account = await accountService.GetAccountAsync(session.AccountID);
-		logger.LogInformation($"User {account} was authorized via {grantType}");
+		logger.LogInformation($"User '{account?.ToString() ?? EpicID.Empty.ToString()}' was authorized via {request.GrantType}");
 
 		JObject obj = new JObject();
 		obj.Add("access_token", session.AccessToken.Value);
@@ -168,7 +188,7 @@ public class SessionController : JsonAPIController
 		{
 			obj.Add("displayName", account.Username);
 
-			if (includePerms == true)
+			if (request.IncludePerms == true)
 			{
 				// should probably be okay to send empty array
 				obj.Add("perms", new JArray());
@@ -243,9 +263,9 @@ public class SessionController : JsonAPIController
 	public async Task<IActionResult> KillSession(string accessToken)
 	{
 		if (User.Identity is not EpicUserIdentity user)
-			return NoContent();
+			return Unauthorized();
 
-		// TODO: Check if session exists and return Error: "Sorry we could not find the auth session 'myAuthSessionFromURL'"
+		// TODO: Check if session exists and return ErrorResponse: "Sorry we could not find the auth session 'myAuthSessionFromURL'"
 
 		if (accessToken != user.AccessToken)
 		{
@@ -262,13 +282,13 @@ public class SessionController : JsonAPIController
 	public async Task<IActionResult> KillSessions([FromQuery] string killType)
 	{
 		if (User.Identity is not EpicUserIdentity user)
-			return NoContent();
+			return Unauthorized();
 
 		switch (killType.ToUpper())
 		{
 			case "ALL":
 			{
-				// TODO: Check permission and return error: "Sorry your login does not posses the permissions 'account:token:allSessionsForClient DELETE' needed to perform the requested operation"
+				// TODO: Check permission and return ErrorResponse: "Sorry your login does not posses the permissions 'account:token:allSessionsForClient DELETE' needed to perform the requested operation"
 				await sessionService.RemoveSessionsWithFilterAsync(EpicID.Empty, user.Session.AccountID, EpicID.Empty);
 				break;
 			}
@@ -280,19 +300,19 @@ public class SessionController : JsonAPIController
 			}
 			case "ALL_ACCOUNT_CLIENT":
 			{
-				// TODO: Check and return error: "Cannot use the killType ALL_ACCOUNT_CLIENT with a client only OauthSession."
+				// TODO: Check and return ErrorResponse: "Cannot use the killType ALL_ACCOUNT_CLIENT with a client only OauthSession."
 				await sessionService.RemoveSessionsWithFilterAsync(user.Session.ClientID, user.Session.AccountID, EpicID.Empty);
 				break;
 			}
 			case "OTHERS_ACCOUNT_CLIENT":
 			{
-				// TODO: Check and return error: "Cannot use the killType OTHERS_ACCOUNT_CLIENT with a client only OauthSession."
+				// TODO: Check and return ErrorResponse: "Cannot use the killType OTHERS_ACCOUNT_CLIENT with a client only OauthSession."
 				await sessionService.RemoveSessionsWithFilterAsync(user.Session.ClientID, user.Session.AccountID, user.Session.ID);
 				break;
 			}
 			case "OTHERS_ACCOUNT_CLIENT_SERVICE":
 			{
-				// TODO: Check and return error: "Cannot use the killType OTHERS_ACCOUNT_CLIENT_SERVICE with a client only OauthSession."
+				// TODO: Check and return ErrorResponse: "Cannot use the killType OTHERS_ACCOUNT_CLIENT_SERVICE with a client only OauthSession."
 				// i am not sure how this is supposed to differ from OTHERS_ACCOUNT_CLIENT
 				// perhaps service as in epic games launcher and/or website?
 				await sessionService.RemoveSessionsWithFilterAsync(user.Session.ClientID, user.Session.AccountID, user.Session.ID);
@@ -313,7 +333,7 @@ public class SessionController : JsonAPIController
 	public async Task<IActionResult> Verify()
 	{
 		if (User.Identity is not EpicUserIdentity user)
-			return NoContent();
+			return Unauthorized();
 
 		// no refresh needed, but we should respond with this:
 		/*
@@ -387,6 +407,7 @@ public class SessionController : JsonAPIController
 	//	return NoContent();
 	//}
 
+	[NonAction]
 	private BadRequestObjectResult ErrorInvalidRequest(string requiredInput)
 	{
 		return BadRequest(new ErrorResponse

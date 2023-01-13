@@ -1,18 +1,28 @@
 using Microsoft.AspNetCore.Authentication;
 using Microsoft.OpenApi.Models;
 using MongoDB.Bson.Serialization;
+using System.Net;
 using UT4MasterServer.Authentication;
 using UT4MasterServer.Models;
+using UT4MasterServer.Other;
 using UT4MasterServer.Services;
 
 namespace UT4MasterServer;
 
 public static class Program
 {
+	public static DateTime StartupTime { get; } = DateTime.UtcNow;
+
 	public static void Main(string[] args)
 	{
-		// register serializer for EpicID type
-		BsonSerializer.RegisterSerializationProvider(new EpicIDSerializationProvider());
+		// register serializers for custom types
+		BsonSerializer.RegisterSerializationProvider(new BsonSerializationProvider());
+
+		BsonClassMap.RegisterClassMap<Account>(x =>
+		{
+			x.AutoMap();
+			x.MapMember(x => x.LastMatchAt).SetDefaultValue(DateTime.UnixEpoch);
+		});
 
 		// start up asp.net
 		var builder = WebApplication.CreateBuilder(args);
@@ -21,9 +31,33 @@ public static class Program
 		{
 			o.RespectBrowserAcceptHeader = true;
 		});
-		builder.Services.Configure<DatabaseSettings>(
-			builder.Configuration.GetSection("UT4EverDatabase")
+
+		builder.Services.Configure<ApplicationSettings>(
+			builder.Configuration.GetSection("ApplicationSettings")
 		);
+		builder.Services.Configure<ApplicationSettings>(x =>
+		{
+			// handle proxy list loading
+			if (string.IsNullOrWhiteSpace(x.ProxyServersFile))
+				return;
+
+			try
+			{
+				var proxies = File.ReadAllLines(x.ProxyServersFile);
+				foreach (var proxy in proxies)
+				{
+					if (!IPAddress.TryParse(proxy, out var ip))
+						continue;
+
+					x.ProxyServers.Add(ip.ToString());
+				}
+			}
+			catch
+			{
+				// we ignore the fact that proxy list file was not found
+			}
+		});
+
 
 		// services whose instance is created per-request
 		builder.Services
@@ -31,22 +65,30 @@ public static class Program
 			.AddScoped<FriendService>()
 			.AddScoped<AccountService>()
 			.AddScoped<SessionService>()
-			.AddScoped<CloudstorageService>()
-			.AddScoped<MatchmakingService>();
+			.AddScoped<CloudStorageService>()
+			.AddScoped<MatchmakingService>()
+			.AddScoped<StatisticsService>();
 
 		// services whose instance is created once and are persistent
 		builder.Services
 			.AddSingleton<CodeService>();
 
+		// hosted services
+		builder.Services
+			.AddHostedService<ApplicationStartupService>()
+			.AddHostedService<ApplicationBackgroundCleanupService>();
+
 		builder.Services
 			.AddAuthentication(/*by default there is no authentication*/)
 			.AddScheme<AuthenticationSchemeOptions, BearerAuthenticationHandler>(HttpAuthorization.BearerScheme, null)
 			.AddScheme<AuthenticationSchemeOptions, BasicAuthenticationHandler>(HttpAuthorization.BasicScheme, null);
-		builder.Host.ConfigureLogging(logging =>
-		{
-			logging.ClearProviders();
-			logging.AddConsole();
-		});
+
+		builder.Host
+			.ConfigureLogging(logging =>
+			{
+				logging.ClearProviders();
+				logging.AddConsole();
+			});
 
 		builder.Services.AddEndpointsApiExplorer();
 		builder.Services.AddSwaggerGen(config =>
@@ -84,20 +126,19 @@ public static class Program
 			app.UseSwaggerUI();
 		}
 
-		app.UseHttpsRedirection();
+		//app.UseHttpsRedirection();
 		app.UseAuthorization();
 		app.UseAuthentication();
 		app.MapControllers();
 		app.UseStaticFiles();
-		//app.UseStaticFiles(new StaticFileOptions()
-		//{
-		//	FileProvider = new PhysicalFileProvider(Path.Combine(builder.Environment.ContentRootPath, "StaticWebFiles")),
-		//	RequestPath = "/",
-		//	OnPrepareResponse = ctx =>
-		//	{
-		//		// operation to do on all static file responses
-		//	}
-		//});
+
+		// TODO: restrict origin
+		app.UseCors(x =>
+		{
+			x.AllowAnyOrigin()
+				.AllowAnyHeader()
+				.AllowAnyMethod();
+		});
 
 		app.Run();
 	}

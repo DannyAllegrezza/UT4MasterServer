@@ -1,6 +1,7 @@
 using Microsoft.Extensions.Options;
 using UT4MasterServer.Authentication;
 using UT4MasterServer.Models;
+using UT4MasterServer.Other;
 
 namespace UT4MasterServer.Services;
 
@@ -15,7 +16,7 @@ public class CodeService
 	/// </summary>
 	private readonly List<Code> codes;
 
-	public CodeService(IOptions<DatabaseSettings> settings)
+	public CodeService(IOptions<ApplicationSettings> settings)
 	{
 		codes = new List<Code>();
 	}

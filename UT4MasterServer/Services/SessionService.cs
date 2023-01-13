@@ -1,5 +1,6 @@
 using MongoDB.Driver;
 using UT4MasterServer.Models;
+using UT4MasterServer.Other;
 
 namespace UT4MasterServer.Services;
 
@@ -36,7 +37,7 @@ public class SessionService
 
 	public async Task<Session?> GetSessionAsync(string accessToken)
 	{
-		var cursor = await sessionCollection.FindAsync(s => 
+		var cursor = await sessionCollection.FindAsync(s =>
 			s.AccessToken.Value == accessToken
 		);
 		return await InvalidateExpiredSession(await cursor.SingleOrDefaultAsync());
@@ -51,9 +52,9 @@ public class SessionService
 		if (session == null)
 			return null;
 
-        session.Refresh();
+		session.Refresh();
 		await UpdateSessionAsync(session);
-        return session;
+		return session;
 	}
 
 	public async Task UpdateSessionAsync(Session updatedSession)
@@ -76,7 +77,26 @@ public class SessionService
 		);
 	}
 
-	public async Task<Session?> InvalidateExpiredSession(Session? session)
+	public async Task<int> RemoveAllExpiredSessionsAsync()
+	{
+		var now = DateTime.UtcNow;
+
+		var expiredRefreshToken =
+			Builders<Session>.Filter.Exists(x => x.RefreshToken, false) |
+			Builders<Session>.Filter.Lt(x => x.RefreshToken.ExpirationTime, now);
+
+		var expiredAccessToken =
+			Builders<Session>.Filter.Lt(x => x.AccessToken.ExpirationTime, now);
+
+		var result = await sessionCollection.DeleteManyAsync(expiredRefreshToken & expiredAccessToken);
+		if (result.IsAcknowledged)
+			return (int)result.DeletedCount;
+		return -1;
+	}
+
+
+
+	private async Task<Session?> InvalidateExpiredSession(Session? session)
 	{
 		if (session == null)
 			return null;

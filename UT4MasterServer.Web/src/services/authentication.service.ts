@@ -1,37 +1,46 @@
+import { UserStore } from '../stores/user-store';
+import { IRegisterRequest } from '../types/register-request';
 import { ILoginRequest } from '../types/login-request';
+import HttpService from './http.service';
 
-export default class AuthenticationService {
-    private tokenUrl = `${__UT4UU_API_URL}/account/api/oauth/token`;
-    private authUrl = `${__UT4UU_API_URL}/account/api/oauth/auth`;
+interface ILoginResponse {
+    access_token: string;
+}
+
+interface IAuthResponse {
+    authorizationCode: string;
+    redirectUrl: string;
+    sid: string | null;
+}
+
+export default class AuthenticationService extends HttpService {
+    private tokenUrl = `${__BACKEND_URL}/account/api/oauth/token`;
+    private authUrl = `${__BACKEND_URL}/account/api/oauth/auth`;
+    private registerUrl = `${__BACKEND_URL}/account/api/create/account`;
 
     async logIn(request: ILoginRequest) {
-        const sessionResult = await fetch(this.tokenUrl,
-            {
-                method: 'POST',
-                body: JSON.stringify(request),
-                headers: { 'Authorization': __UT4UU_BASIC_AUTH }
-            });
-
-        if (!sessionResult.ok) {
-            throw new Error('Failed to get token');
-        }
-
-        const session = await sessionResult.json();
+        const session = await this.postForm<ILoginResponse, ILoginRequest>(this.tokenUrl, {
+            body: request,
+            headers: {
+                'Authorization': `${__WEB_BASIC_AUTH}`
+            }
+        });
         console.debug('Token response JSON: ', session);
-        const token = session['access_token'] ;
-        const authResult = await fetch(this.authUrl,
-            {
-                method: 'GET',
-                headers: { 'Authorization': `bearer ${token}` }
-            });
 
-        if (!authResult.ok) {
-            throw new Error('Failed to authenticate token');
-        }
-        const authz = await authResult.json();
-        console.debug('Auth response JSON: ', session);
-        localStorage.setItem('ut4uu_authorizationCode', authz['authorizationCode']);
-        //TODO: auth code expiry
-        return authz['authorizationCode'];
+        const token = session.access_token;
+        UserStore.authToken = token;
+        UserStore.username = request.username;
+    }
+
+    async getAuthCode() {
+        const authResponse = await this.get<IAuthResponse>(this.authUrl);
+        console.debug('Auth response JSON: ', authResponse);
+        return authResponse.authorizationCode;
+    }
+
+    async register(request: IRegisterRequest) {
+        UserStore.saveUsername = true;
+        UserStore.username = request.username;
+        return await this.post<unknown, IRegisterRequest>(this.registerUrl, { body: request });
     }
 }

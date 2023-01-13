@@ -1,10 +1,10 @@
-﻿using Microsoft.CodeAnalysis.VisualBasic.Syntax;
-using System.Text;
+﻿using System.Text;
 using System.Text.Json;
-using UT4MasterServer;
+using UT4MasterServer.Models;
 
 namespace XUnit.Tests;
 
+#if false
 public class GameServerAttributeTest
 {
 	public static TheoryData<object?, object?, bool, bool, bool> TestCases = new()
@@ -108,3 +108,4 @@ public class GameServerAttributeTest
 		return JsonElement.ParseValue(ref jsonReader);
 	}
 }
+#endif

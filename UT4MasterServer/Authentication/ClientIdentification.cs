@@ -1,4 +1,6 @@
 ﻿using System.Text;
+using UT4MasterServer.Helpers;
+using UT4MasterServer.Other;
 
 namespace UT4MasterServer.Authentication;
 
@@ -19,27 +21,29 @@ public class ClientIdentification
 
 	//public static string GameAuthorization = "MTI1MjQxMmRjNzcwNGE5NjkwZjZlYTQ2MTFiYzgxZWU6MmNhMGM5MjViNDY3NDg1MmJmZjkyYjI2ZjgzMjI0MzQ=";
 
-
 	public EpicID ID { get; private set; }
 	public EpicID Secret { get; private set; }
 	public string Authorization { get; private set; }
 
 	public ClientIdentification(string authorization)
 	{
-		string decoded = Encoding.UTF8.GetString(Convert.FromBase64String(authorization));
-		var colon = decoded.IndexOf(':');
-		if (colon < 0)
+		if (authorization.TryDecodeBase64(out var parsedBytes))
 		{
-			// unknown format
-			Authorization = authorization;
-			ID = EpicID.Empty;
-			Secret = EpicID.Empty;
-			return;
+			string decoded = Encoding.UTF8.GetString(parsedBytes);
+			var colon = decoded.IndexOf(':');
+			if (colon >= 0)
+			{
+				Authorization = authorization;
+				ID = EpicID.FromString(decoded.Substring(0, colon));
+				Secret = EpicID.FromString(decoded.Substring(colon + 1));
+				return;
+			}
 		}
 
+		// unknown format
 		Authorization = authorization;
-		ID = EpicID.FromString(decoded.Substring(0, colon));
-		Secret = EpicID.FromString(decoded.Substring(colon + 1));
+		ID = EpicID.Empty;
+		Secret = EpicID.Empty;
 	}
 
 	public ClientIdentification(EpicID id, EpicID secret)

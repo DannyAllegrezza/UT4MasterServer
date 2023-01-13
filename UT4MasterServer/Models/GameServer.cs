@@ -2,8 +2,9 @@
 using Newtonsoft.Json.Linq;
 using System.Text.Json;
 using System.Text.Json.Serialization;
+using UT4MasterServer.Other;
 
-namespace UT4MasterServer;
+namespace UT4MasterServer.Models;
 
 public enum GameServerTrust
 {
@@ -14,11 +15,11 @@ public enum GameServerTrust
 
 public class GameServerAttributes
 {
-	private Dictionary<string, object> ServerConfigs;
+	private readonly Dictionary<string, object> serverConfigs;
 
 	public GameServerAttributes()
 	{
-		ServerConfigs = new Dictionary<string, object>();
+		serverConfigs = new Dictionary<string, object>();
 	}
 
 	public void Set(string key, string? value)
@@ -36,30 +37,9 @@ public class GameServerAttributes
 		SetDirect(key, value);
 	}
 
-	internal void SetDirect(string key, object? value)
-	{
-		if (value != null)
-		{
-			if (ServerConfigs.ContainsKey(key))
-				ServerConfigs[key] = value;
-			else
-				ServerConfigs.Add(key, value);
-		}
-		else
-		{
-			if (ServerConfigs.ContainsKey(key))
-				ServerConfigs.Remove(key);
-		}
-	}
-
-	internal Dictionary<string, object> GetUnderlyingDict()
-	{
-		return ServerConfigs;
-	}
-
 	public void Update(GameServerAttributes other)
 	{
-		foreach (var attribute in other.ServerConfigs)
+		foreach (var attribute in other.serverConfigs)
 		{
 			if (attribute.Key == "UT_SERVERTRUSTLEVEL_i")
 				continue; // do not allow server to modify this attribute
@@ -70,83 +50,26 @@ public class GameServerAttributes
 
 	public bool Contains(string key)
 	{
-		return ServerConfigs.ContainsKey(key);
+		return serverConfigs.ContainsKey(key);
 	}
 
-	/// <summary>
-	/// Check if stored attribute is equal to <paramref name="value"/>, no matter the type
-	/// </summary>
-	/// <param name="key">attribute key</param>
-	/// <param name="value">attribute comparison value</param>
-	/// <returns>true if attribute with name <paramref name="key"/> contains value equal to <paramref name="value"/>, false otherwise</returns>
-	public bool Eq(string key, JsonElement value)
+	public object? Get(string key)
 	{
 		if (!Contains(key))
-			return value.ValueKind == JsonValueKind.Null;
-
-		var obj = ServerConfigs[key];
-
-		if (obj is string objString && value.ValueKind == JsonValueKind.String)
-			return objString == value.GetString();
-		if (obj is int objInt && value.ValueKind == JsonValueKind.Number)
-			return objInt == value.GetInt32();
-		if (obj is bool objBool && (value.ValueKind == JsonValueKind.True || value.ValueKind == JsonValueKind.False))
-			return objBool == value.GetBoolean();
-
-		return false;
+			return null;
+		return serverConfigs[key];
 	}
 
-	/// <summary>
-	/// Check if stored attribute is less than <paramref name="value"/>, no matter the type
-	/// </summary>
-	/// <param name="key">attribute key</param>
-	/// <param name="value">attribute comparison value</param>
-	/// <returns>true if attribute with name <paramref name="key"/> contains value less than <paramref name="value"/>, false otherwise</returns>
-	public bool Lt(string key, JsonElement value)
+	public string[] GetKeys()
 	{
-		if (!Contains(key))
-			return false;
-
-		var obj = ServerConfigs[key];
-
-		if (obj is string objString && value.ValueKind == JsonValueKind.String)
-			return objString.CompareTo(value.GetString()) < 0;
-		if (obj is int objInt && value.ValueKind == JsonValueKind.Number)
-			return objInt < value.GetInt32();
-		if (obj is bool objBool && (value.ValueKind == JsonValueKind.True || value.ValueKind == JsonValueKind.False))
-			return !objBool && value.GetBoolean(); // idk, compare as if its 0 or 1
-
-		return false;
-	}
-
-	/// <summary>
-	/// Check if stored attribute is less than or equal to <paramref name="value"/>, no matter the type
-	/// </summary>
-	/// <param name="key">attribute key</param>
-	/// <param name="value">attribute comparison value</param>
-	/// <returns>true if attribute with name <paramref name="key"/> contains value less than or equal to <paramref name="value"/>, false otherwise</returns>
-	public bool Lte(string key, JsonElement value)
-	{
-		if (!Contains(key))
-			return value.ValueKind == JsonValueKind.Null;
-
-		var obj = ServerConfigs[key];
-
-		if (obj is string objString && value.ValueKind == JsonValueKind.String)
-			return objString.CompareTo(value.GetString()) <= 0;
-		if (obj is int objInt && value.ValueKind == JsonValueKind.Number)
-			return objInt <= value.GetInt32();
-		if (obj is bool objBool && (value.ValueKind == JsonValueKind.True || value.ValueKind == JsonValueKind.False))
-			return !(objBool && !value.GetBoolean()); // idk, compare as if its 0 or 1
-
-		return false;
+		return serverConfigs.Keys.ToArray();
 	}
 
 	public JObject ToJObject()
 	{
 		var obj = new JObject();
 
-		foreach (var kvp in ServerConfigs)
+		foreach (var kvp in serverConfigs)
 		{
 			if (kvp.Key.EndsWith("_b"))
 				obj.Add(kvp.Key, (bool)kvp.Value);
@@ -158,18 +81,40 @@ public class GameServerAttributes
 
 		return obj;
 	}
+
+	private void SetDirect(string key, object? value)
+	{
+		if (value != null)
+		{
+			if (serverConfigs.ContainsKey(key))
+				serverConfigs[key] = value;
+			else
+				serverConfigs.Add(key, value);
+		}
+		else
+		{
+			if (serverConfigs.ContainsKey(key))
+				serverConfigs.Remove(key);
+		}
+	}
 }
 
 public class GameServer
 {
-	/// <summary>
-	/// GameServer's Session
-	/// </summary>
-	public EpicID SessionID { get; set; } = EpicID.Empty;
-
 	[BsonId]
 	[JsonPropertyName("id")]
 	public EpicID ID { get; set; } = EpicID.Empty;
+
+	/// <summary>
+	/// GameServer's Session
+	/// </summary>
+	[BsonElement("SessionID")]
+	public EpicID SessionID { get; set; } = EpicID.Empty;
+
+#if DEBUG
+	[BsonElement("SessionAccessToken")]
+	public string SessionAccessToken { get; set; } = string.Empty;
+#endif
 
 	[BsonElement("OwnerID")]
 	[JsonPropertyName("ownerId")]
@@ -338,13 +283,16 @@ public class GameServer
 		LastUpdated = DateTime.UtcNow;
 	}
 
-
 	public JObject ToJson(bool isResponseToClient)
 	{
 		// build json
 		var obj = new JObject();
 
 		obj.Add("id", ID.ToString());
+#if DEBUG
+		obj.Add("UT4MS__SESSION_ID__DEBUG_ONLY_VALUE", SessionID.ToString());
+		obj.Add("UT4MS__SESSION_TOKEN__DEBUG_ONLY_VALUE", SessionAccessToken);
+#endif
 		obj.Add("ownerId", OwnerID.ToString().ToUpper());
 		obj.Add("ownerName", OwnerName);
 		obj.Add("serverName", ServerName);

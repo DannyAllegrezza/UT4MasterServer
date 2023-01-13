@@ -1,5 +1,6 @@
 ﻿using MongoDB.Bson.Serialization.Attributes;
 using UT4MasterServer.Authentication;
+using UT4MasterServer.Other;
 
 namespace UT4MasterServer.Models;
 
@@ -28,12 +29,11 @@ public class Session
 	[BsonElement("AccessToken")]
 	public Token AccessToken { get; set; }
 
-	[BsonElement("RefreshToken")]
-	public Token RefreshToken { get; set; }
+	[BsonElement("RefreshToken"), BsonDefaultValue(null), BsonIgnoreIfDefault]
+	public Token? RefreshToken { get; set; } = null;
 
 	[BsonElement("CreationMethod")]
 	public SessionCreationMethod CreationMethod { get; set; }
-
 
 	public Session(EpicID session, EpicID account, EpicID clientID, SessionCreationMethod creationMethod)
 	{
@@ -61,8 +61,17 @@ public class Session
 				RefreshToken = Token.Generate(TimeSpan.FromHours(24)); // same as epic
 				break;
 			case SessionCreationMethod.ClientCredentials:
-				AccessToken = Token.Generate(TimeSpan.FromHours(4)); // same as epic
-				RefreshToken = Token.Generate(TimeSpan.FromHours(24)); // same as epic
+
+				// EPIC sets access token here to 4 hours and there is no refresh token.
+				// game will create a new session when token is 2h from expiration.
+
+#if DEBUG
+				// debug with short sessions
+				AccessToken = Token.Generate(TimeSpan.FromHours(2) + TimeSpan.FromMinutes(10));
+#else
+				AccessToken = Token.Generate(TimeSpan.FromHours(4));
+#endif
+				RefreshToken = null; // it's impossible to refresh, same as epic
 				break;
 			default:
 				throw new ArgumentException("invalid sessionType");

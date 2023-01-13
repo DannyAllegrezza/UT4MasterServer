@@ -3,6 +3,8 @@ using Microsoft.AspNetCore.Mvc;
 using Newtonsoft.Json.Linq;
 using UT4MasterServer.Authentication;
 using UT4MasterServer.Models;
+using UT4MasterServer.Models.Requests;
+using UT4MasterServer.Other;
 using UT4MasterServer.Services;
 
 namespace UT4MasterServer.Controllers;
@@ -16,12 +18,10 @@ namespace UT4MasterServer.Controllers;
 [Produces("application/json")]
 public class AccountController : JsonAPIController
 {
-	private readonly ILogger<AccountController> logger;
 	private readonly AccountService accountService;
 
-	public AccountController(AccountService accountService, ILogger<AccountController> logger)
+	public AccountController(ILogger<AccountController> logger, AccountService accountService) : base(logger)
 	{
-		this.logger = logger;
 		this.accountService = accountService;
 	}
 
@@ -43,7 +43,7 @@ public class AccountController : JsonAPIController
 			{
 				ErrorCode = "errors.com.epicgames.account.account_not_found",
 				ErrorMessage = $"Sorry, we couldn't find an account for {id}",
-				MessageVars = new [] { id },
+				MessageVars = new[] { id },
 				NumericErrorCode = 18007,
 				OriginatingService = "com.epicgames.account.public",
 				Intent = "prod",
@@ -142,7 +142,7 @@ public class AccountController : JsonAPIController
 		EpicID eid = EpicID.FromString(id);
 
 		logger.LogInformation($"Get external auths of {eid}");
-		// we dont really care about these, but structure for my github externalAuth is the following:
+		// we don't really care about these, but structure for my github externalAuth is the following:
 		/*
 		[{
 			"accountId": "0b0f09b400854b9b98932dd9e5abe7c5", "type": "github",
@@ -171,24 +171,22 @@ public class AccountController : JsonAPIController
 
 	[HttpPost("create/account")]
 	[AllowAnonymous]
-	public async Task<IActionResult> RegisterAccount([FromForm] string username, [FromForm] string password)
+	public async Task<IActionResult> RegisterAccount([FromBody] RegisterRequest request)
 	{
-		var account = await accountService.GetAccountAsync(username);
+		// TODO: Add validation
+		var account = await accountService.GetAccountAsync(request.Username);
 		if (account != null)
 		{
-			logger.LogInformation($"Could not register duplicate account: {username}");
-			// This is a generic HTTP 400. A 409 (Conflict) might be more appropriate?
-			// Depends how our create account form is built. It will need to know why
-			// it failed (dupe account, invalid name, bad password, etc)
-			return new BadRequestObjectResult("Username already exists");
+			logger.LogInformation($"Could not register duplicate account: {request.Username}");
+			return Conflict("Username already exists");
 		}
 
 		// TODO: should we also get user's email?
-		await accountService.CreateAccountAsync(username, password); // TODO: this cannot fail?
+		await accountService.CreateAccountAsync(request.Username, request.Password); // TODO: this cannot fail?
 
-		logger.LogInformation($"Registered new user: {username}");
+		logger.LogInformation($"Registered new user: {request.Username}");
 
-		return NoContent();
+		return Ok("Account created successfully");
 	}
 
 	#endregion
